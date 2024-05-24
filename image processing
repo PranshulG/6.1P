@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+
+# Import necessary libraries
+import sys
+import time
+
+# Import NumPy for numerical operations
+import numpy as np
+
+# Import OpenCV for image processing
+import cv2
+from cv_bridge import CvBridge
+
+# Import ROS libraries
+import rospy
+import roslib
+
+# Import ROS message types
+from sensor_msgs.msg import CompressedImage
+
+class LaneDetection:
+    def __init__(self):
+        # Initialize CvBridge for converting ROS images to OpenCV images
+        self.bridge = CvBridge()
+
+        # Subscribe to the camera image topic
+        self.image_subscriber = rospy.Subscriber('/duckieshop/camera_node/image/compressed', CompressedImage, self.process_image, queue_size=1)
+
+        # Initialize the ROS node
+        rospy.init_node("lane_detection_node")
+
+        # Set up VideoWriters for recording processed images
+        self.yellow_video_writer = cv2.VideoWriter('yellow_filtered_output.mp4', cv2.VideoWriter_fourcc(*'mp4v'), 30.0, (640, 480))
+        self.white_video_writer = cv2.VideoWriter('white_filtered_output.mp4', cv2.VideoWriter_fourcc(*'mp4v'), 30.0, (640, 480))
+
+    def process_image(self, image_message):
+        rospy.loginfo("Image received for processing")
+
+        # Convert the compressed ROS image to an OpenCV image
+        original_image = self.bridge.compressed_imgmsg_to_cv2(image_message, "bgr8")
+
+        # Crop the image to focus on the road area
+        road_image = original_image[200:, :]
+
+        # Convert the cropped image to HSV color space
+        hsv_image = cv2.cvtColor(road_image, cv2.COLOR_BGR2HSV)
+
+        # Define color ranges for white and yellow colors in HSV space
+        white_lower_bound = np.array([0, 0, 180], dtype=np.uint8)
+        white_upper_bound = np.array([255, 25, 255], dtype=np.uint8)
+        yellow_lower_bound = np.array([20, 100, 100], dtype=np.uint8)
+        yellow_upper_bound = np.array([30, 255, 255], dtype=np.uint8)
+
+        # Create masks to filter out white and yellow colors
+        white_mask = cv2.inRange(hsv_image, white_lower_bound, white_upper_bound)
+        yellow_mask = cv2.inRange(hsv_image, yellow_lower_bound, yellow_upper_bound)
+
+        # Apply masks to get the filtered images
+        white_filtered = cv2.bitwise_and(road_image, road_image, mask=white_mask)
+        yellow_filtered = cv2.bitwise_and(road_image, road_image, mask=yellow_mask)
+
+        # Detect edges using Canny Edge Detector
+        white_edges = cv2.Canny(white_filtered, 50, 150)
+        yellow_edges = cv2.Canny(yellow_filtered, 50, 150)
+
+        # Detect lines using Hough Transform
+        white_lines = cv2.HoughLinesP(white_edges, 1, np.pi/180, threshold=50, minLineLength=50, maxLineGap=10)
+        yellow_lines = cv2.HoughLinesP(yellow_edges, 1, np.pi/180, threshold=50, minLineLength=50, maxLineGap=10)
+
+        # Draw detected lines on the original cropped image
+        if white_lines is not None:
+            for line in white_lines:
+                x1, y1, x2, y2 = line[0]
+                cv2.line(road_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                
+        if yellow_lines is not None:
+            for line in yellow_lines:
+                x1, y1, x2, y2 = line[0]
+                cv2.line(road_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
+
+        # Display the images
+        cv2.imshow('Cropped Image', road_image)
+        cv2.imshow('White Lane Filter', white_filtered)
+        cv2.imshow('Yellow Lane Filter', yellow_filtered)
+        cv2.waitKey(1)
+
+        # Write the filtered images to video files
+        self.yellow_video_writer.write(yellow_filtered)
+        self.white_video_writer.write(white_filtered)
+
+    def run(self):
+        # Keep the node running and listening to image callbacks
+        rospy.spin()
+
+    def __del__(self):
+        # Release the VideoWriter resources when the object is destroyed
+        self.yellow_video_writer.release()
+        self.white_video_writer.release()
+
+if __name__ == "__main__":
+    try:
+        # Create an instance of the LaneDetection class and start processing
+        lane_detection_instance = LaneDetection()
+        lane_detection_instance.run()
+    except rospy.ROSInterruptException:
+        pass
